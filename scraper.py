@@ -203,15 +203,20 @@ class GoogleMapsScraper:
 
     def _extract_business_name(self, page):
         """Extracts the business name from the page."""
+
         try:
-            # Selector identified in prompt: class "a5H0ec" or "DUwDvf" (common title classes)
-            # a5H0ec seems to be the main title header class often
-            title_el = page.locator(".a5H0ec, h1.DUwDvf").first
-            if title_el.is_visible():
-                return title_el.inner_text()
-            return "Unknown Business"
+            return page.locator("h1").inner_text().strip()
         except:
             return "Unknown Business"
+        #try:
+            # Selector identified in prompt: class "a5H0ec" or "DUwDvf" (common title classes)
+            # a5H0ec seems to be the main title header class often
+            #title_el = page.locator(".a5H0ec, h1.DUwDvf").first
+        #    if title_el.is_visible():
+        #        return title_el.inner_text()
+        #    return "Unknown Business"
+        #except:
+        #    return "Unknown Business"
 
     def scrape(self, return_data=False):
         self.log(f"Iniciando scraping (Headless: {self.headless})")
@@ -269,7 +274,8 @@ class GoogleMapsScraper:
                 self.log(f"Navegando a: {self.url}")
                 page.goto(self.url, timeout=60000)
                 #wait for full address
-                page.wait_for_url(re.compile(r"/maps/place/"), timeout=45000)
+                page.wait_for_url("**/maps/place/**", timeout=45000)
+                page.wait_for_selector('div[role="main"]', timeout=30000)
                 #self.random_sleep(3, 5)
 
                 # Extract Business Name
@@ -278,22 +284,47 @@ class GoogleMapsScraper:
 
                 # Intentar abrir el panel de reseñas si no está abierto
                 # Buscamos botón que diga "Reseñas" o el conteo de estrellas
-                self.log("Buscando panel de reseñas...")
-                try:
-                    # Selector genérico para el tab de 'Reseñas'
-                    reviews_tab = page.locator("button[aria-label*='Reseñas'], button[aria-label*='Reviews']").first
-                    if reviews_tab.is_visible():
-                         reviews_tab.click()
-                         self.random_sleep(2, 4)
-                except:
-                    pass
+                # self.log("Buscando panel de reseñas...")
+                # try:
+                #     # Selector genérico para el tab de 'Reseñas'
+                #     reviews_tab = page.locator("button[aria-label*='Reseñas'], button[aria-label*='Reviews']").first
+                #     if reviews_tab.is_visible():
+                #          reviews_tab.click()
+                #          self.random_sleep(2, 4)
+                # except:
+                #     pass
 
-                # Esperar contenedor de reseñas
+                # # Esperar contenedor de reseñas
+                # try:
+                #     page.wait_for_selector(f".{self.REVIEW_CONTAINER_CLASS}", timeout=20000)
+                # except TimeoutError:
+                #     self.log("⚠️ No se encontraron reseñas visiblemente.")
+                #     return [] if return_data else None
+
+                self.log("Buscando panel de reseñas...")
+
+                # 1️⃣ Esperar activamente el botón de reseñas
                 try:
-                    page.wait_for_selector(f".{self.REVIEW_CONTAINER_CLASS}", timeout=20000)
-                except TimeoutError:
-                    self.log("⚠️ No se encontraron reseñas visiblemente.")
+                    reviews_tab = page.locator(
+                        "button[aria-label*='Reviews'], button[aria-label*='Reseñas']"
+                    )
+
+                    reviews_tab.wait_for(state="visible", timeout=30000)
+                    reviews_tab.first.click()
+                    self.random_sleep(2, 4)
+
+                except Exception as e:
+                    self.log(f"⚠️ No se pudo abrir el panel de reseñas: {e}")
                     return [] if return_data else None
+
+
+                # 2️⃣ Esperar reseñas usando selector ESTABLE
+                try:
+                    page.wait_for_selector("[data-review-id]", timeout=30000)
+                except TimeoutError:
+                    self.log("⚠️ Panel de reseñas abierto, pero sin reseñas visibles.")
+                    return [] if return_data else None
+                
 
                 # Scroll loop
                 processed_ids = set()
