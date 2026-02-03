@@ -113,55 +113,50 @@ class AnalysisRequest(BaseModel):
 
 @app.post("/analyze")
 def analyze_reviews(req: AnalysisRequest):
-    """
-    Main endpoint using Lazy Imports with Database Fallback and Error Logging.
-    """
-    # 1. LAZY IMPORTS
     import database
     from scraper import GoogleMapsScraper
+    import hashlib
     
     db = database.SessionLocal()
     
     try:
-        # Calculate Hash
         url_hash = hashlib.md5(req.maps_url.encode()).hexdigest()
 
-        # 2. Check Cache (Si no se fuerza actualización)
+        # 1. Intentar usar Cache si no se fuerza la actualización
         if not req.forceUpdate:
             cached_entry = database.get_cached_analysis(db, url_hash)
             if cached_entry:
                 print(f"✅ Serving from PostgreSQL Cache (Hash: {url_hash})")
                 return {**cached_entry.analysis_json, "cached": True}
 
-        # 3. Scrape Fresh Data
-        print(f"🚀 Scraping Fresh Data for: {req.maps_url}") [cite: 1]
-        scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True) [cite: 1]
-        raw_reviews = scraper.scrape(return_data=True) [cite: 1]
+        # 2. Intentar Scrapear nuevos datos
+        print(f"🚀 Scraping Fresh Data for: {req.maps_url}")
+        scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True)
+        raw_reviews = scraper.scrape(return_data=True)
 
-        # 4. FALLBACK LOGIC: Registro de error y búsqueda en DB
+        # 3. Lógica de Fallback con Log de Error
         if not raw_reviews:
-            # Mostramos el error en el log del servidor como solicitaste
-            print(f"❌ ERROR: No se pudieron obtener reseñas nuevas de {req.maps_url}. Iniciando recuperación de base de datos...") [cite: 1]
+            # ESTE ES EL LOG QUE SOLICITASTE
+            print(f"❌ ERROR: No se encontraron reseñas en la web para la URL: {req.maps_url}")
             
             fallback_entry = database.get_cached_analysis(db, url_hash)
-            
             if fallback_entry:
-                print(f"📦 Fallback exitoso: Se recuperaron datos previos de '{fallback_entry.business_name}' para evitar respuesta vacía.")
-                return {**fallback_entry.analysis_json, "cached": True, "fallback": True}
+                print(f"📦 INFO: Usando última coincidencia encontrada en DB para: {fallback_entry.business_name}")
+                return {**fallback_entry.analysis_json, "cached": True, "fallback_mode": True}
             else:
-                # Si no hay datos ni en la web ni en la base de datos
-                print(f"❌ CRITICAL: No existe registro previo en DB para {url_hash}. La solicitud fallará.")
-                raise HTTPException(status_code=404, detail="No reviews found and no cached data available.")
+                print(f"⚠️ ERROR CRÍTICO: No hay datos previos en DB para esta URL.")
+                raise HTTPException(status_code=404, detail="No se encontraron reseñas y no hay respaldo en la base de datos.")
 
-        # 5. NLP Analysis (Si el scraping fue exitoso)
+        # 4. Si hay reseñas, procesar con NLP
         print("🧠 Running NLP Analysis...")
         nlp = get_nlp_engine()
         analysis_result = nlp.analyze(raw_reviews)
         
-        business_name = raw_reviews[0].get("business_name") if raw_reviews else "Unknown" [cite: 1]
+        business_name = raw_reviews[0].get("business_name") if raw_reviews else "Unknown"
 
+        # Asegúrate de que este diccionario esté bien cerrado
         final_response = {
-            "business_name": business_name, [cite: 1]
+            "business_name": business_name,
             "total_reviews": analysis_result["total_reviews"],
             "sentiment_summary": analysis_result["sentiment_summary"],
             "average_rating": analysis_result["average_rating"],
@@ -169,7 +164,7 @@ def analyze_reviews(req: AnalysisRequest):
             "cached": False
         }
 
-        # 6. Save to Cache
+        # 5. Guardar en DB para futuros fallbacks
         database.save_analysis(
             db, 
             url_hash=url_hash, 
@@ -181,7 +176,7 @@ def analyze_reviews(req: AnalysisRequest):
         return final_response
 
     except Exception as e:
-        print(f"❌ Error fatal en /analyze: {str(e)}")
+        print(f"❌ Error en el servidor: {str(e)}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
