@@ -53,17 +53,39 @@ def analyze_reviews(req: AnalysisRequest):
         scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True)
         raw_reviews = scraper.scrape(return_data=True)
 
-        # 3. FALLBACK: Si no hay reseñas, loguear error y buscar cualquier registro en DB
+        # # 3. FALLBACK: Si no hay reseñas, loguear error y buscar cualquier registro en DB
+        # if not raw_reviews:
+        #     print(f"❌ ERROR: No se encontraron reseñas nuevas para {req.maps_url}")
+            
+        #     # Intentamos recuperar lo que sea que tengamos en la DB (aunque sea viejo)
+        #     fallback_entry = database.get_cached_analysis(db, url_hash)
+        #     if fallback_entry:
+        #         print(f"📦 Fallback: Devolviendo última coincidencia de '{fallback_entry.business_name}'")
+        #         return {**fallback_entry.analysis_json, "cached": True, "fallback": True}
+        #     else:
+        #         raise HTTPException(status_code=404, detail="No se encontraron reseñas y no hay datos en la base de datos.")
+        # 3. FALLBACK: Si no hay reseñas, buscar en cache o un registro aleatorio
         if not raw_reviews:
             print(f"❌ ERROR: No se encontraron reseñas nuevas para {req.maps_url}")
             
-            # Intentamos recuperar lo que sea que tengamos en la DB (aunque sea viejo)
+            # A. Intentamos recuperar la última versión de ESA URL específica
             fallback_entry = database.get_cached_analysis(db, url_hash)
+            
             if fallback_entry:
                 print(f"📦 Fallback: Devolviendo última coincidencia de '{fallback_entry.business_name}'")
                 return {**fallback_entry.analysis_json, "cached": True, "fallback": True}
+            
+            # B. Si ni siquiera esa URL existe, traemos CUALQUIER registro al azar (Nuevo paso)
+            from sqlalchemy.sql.expression import func
+            # Asumiendo que tu modelo en database.py se llama Analysis
+            random_entry = db.query(database.Analysis).order_by(func.random()).first()
+            
+            if random_entry:
+                print(f"🎲 Azar: Devolviendo registro aleatorio de '{random_entry.business_name}'")
+                return {**random_entry.analysis_json, "cached": True, "fallback_random": True}
             else:
-                raise HTTPException(status_code=404, detail="No se encontraron reseñas y no hay datos en la base de datos.")
+                raise HTTPException(status_code=404, detail="La base de datos está vacía y no hay reseñas nuevas.")
+
 
         # 4. Procesar NLP
         nlp = get_nlp_engine()
