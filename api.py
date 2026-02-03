@@ -113,58 +113,63 @@ class AnalysisRequest(BaseModel):
 
 @app.post("/analyze")
 def analyze_reviews(req: AnalysisRequest):
+    """
+    Main endpoint with Database Fallback and Server Logging.
+    """
     import database
     from scraper import GoogleMapsScraper
     import hashlib
-    
+
     db = database.SessionLocal()
     
     try:
         url_hash = hashlib.md5(req.maps_url.encode()).hexdigest()
 
-        # 1. Intentar usar Cache si no se fuerza la actualización
+        # 1. Intento de Cache
         if not req.forceUpdate:
             cached_entry = database.get_cached_analysis(db, url_hash)
             if cached_entry:
                 print(f"✅ Serving from PostgreSQL Cache (Hash: {url_hash})")
                 return {**cached_entry.analysis_json, "cached": True}
 
-        # 2. Intentar Scrapear nuevos datos
+        # 2. Intento de Scraping
         print(f"🚀 Scraping Fresh Data for: {req.maps_url}")
         scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True)
         raw_reviews = scraper.scrape(return_data=True)
 
-        # 3. Lógica de Fallback con Log de Error
+        # 3. Fallback si no hay reseñas (LOG DE ERROR INCLUIDO)
         if not raw_reviews:
-            # ESTE ES EL LOG QUE SOLICITASTE
-            print(f"❌ ERROR: No se encontraron reseñas en la web para la URL: {req.maps_url}")
+            # Mostramos el error en el log del servidor
+            print(f"❌ ERROR: El scraper no encontró reseñas en Google Maps para: {req.maps_url}")
             
+            # Buscamos la primera coincidencia (o última guardada) en la base de datos
             fallback_entry = database.get_cached_analysis(db, url_hash)
+            
             if fallback_entry:
-                print(f"📦 INFO: Usando última coincidencia encontrada en DB para: {fallback_entry.business_name}")
-                return {**fallback_entry.analysis_json, "cached": True, "fallback_mode": True}
+                print(f"📦 INFO: Se encontró respaldo en DB para '{fallback_entry.business_name}'. Devolviendo datos antiguos.")
+                return {**fallback_entry.analysis_json, "cached": True, "fallback": True}
             else:
-                print(f"⚠️ ERROR CRÍTICO: No hay datos previos en DB para esta URL.")
-                raise HTTPException(status_code=404, detail="No se encontraron reseñas y no hay respaldo en la base de datos.")
+                print(f"⚠️ ERROR CRÍTICO: No hay datos previos en la base de datos para esta URL.")
+                raise HTTPException(status_code=404, detail="No se encontraron reseñas nuevas ni existen datos previos en el sistema.")
 
-        # 4. Si hay reseñas, procesar con NLP
+        # 4. Procesamiento NLP (Solo si hubo reseñas nuevas)
         print("🧠 Running NLP Analysis...")
         nlp = get_nlp_engine()
         analysis_result = nlp.analyze(raw_reviews)
         
         business_name = raw_reviews[0].get("business_name") if raw_reviews else "Unknown"
 
-        # Asegúrate de que este diccionario esté bien cerrado
         final_response = {
             "business_name": business_name,
             "total_reviews": analysis_result["total_reviews"],
             "sentiment_summary": analysis_result["sentiment_summary"],
             "average_rating": analysis_result["average_rating"],
             "reviews": analysis_result["reviews"],
-            "cached": False
+            "cached": False,
+            "fallback": False
         }
 
-        # 5. Guardar en DB para futuros fallbacks
+        # 5. Guardar en Cache para futuros fallos
         database.save_analysis(
             db, 
             url_hash=url_hash, 
@@ -176,7 +181,7 @@ def analyze_reviews(req: AnalysisRequest):
         return final_response
 
     except Exception as e:
-        print(f"❌ Error en el servidor: {str(e)}")
+        print(f"❌ Error fatal en /analyze: {str(e)}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
