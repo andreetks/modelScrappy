@@ -268,7 +268,9 @@ class GoogleMapsScraper:
             try:
                 self.log(f"Navegando a: {self.url}")
                 page.goto(self.url, timeout=60000)
-                self.random_sleep(3, 5)
+                #wait for full address
+                await page.wait_for_url("**/maps/place/**", timeout=45000)
+                #self.random_sleep(3, 5)
 
                 # Extract Business Name
                 business_name = self._extract_business_name(page)
