@@ -7,3 +7,4 @@ cache_data/
 modelenv/
 debug/
 *.csv
+*.db

@@ -1,28 +1,45 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy.orm import Session
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import hashlib
 import os
 
-# Modules
-from scraper import GoogleMapsScraper
-from nlp import ReviewAnalyzer
-import database # PostgreSQL Cache Module
+# --- LIGHTWEIGHT API DEFINITION ---
+# No heavy imports here (no transformers, no playwright, no database)
 
-app = FastAPI(title="Google Maps Sentiment API (PostgreSQL)")
+app = FastAPI(title="Google Maps Sentiment API (Optimized for Render)")
 
-# Initialize NLP Model (Global)
-nlp_engine = None
+# Global cache for NLP model to avoid reloading on every request
+_nlp_engine = None
+
+def get_nlp_engine():
+    global _nlp_engine
+    if _nlp_engine is None:
+        print("Lazy Loading NLP Engine...")
+        from nlp import ReviewAnalyzer
+        _nlp_engine = ReviewAnalyzer()
+    return _nlp_engine
+
+@app.get("/")
+def health_check():
+    """
+    Simple health check that runs immediately without loading heavy libs.
+    Allows Render to detect the open port fast.
+    """
+    return {"status": "ok", "service": "Google Maps NLP API", "ready": True}
 
 @app.on_event("startup")
 def startup_event():
-    # 1. Initialize DB Tables
-    database.init_db()
-    
-    # 2. Load NLP Model
-    global nlp_engine
-    if not os.environ.get("SKIP_NLP_LOAD"):
-        nlp_engine = ReviewAnalyzer()
+    """
+    Initialize Database tables on startup.
+    This runs AFTER the app is created, allowing Uvicorn to bind the socket.
+    """
+    try:
+        print("Startup: Initializing Database...")
+        import database
+        database.init_db()
+        print("Startup: Database initialized.")
+    except Exception as e:
+        print(f"Startup Warning: Database init failed (might be connection issue): {e}")
 
 class AnalysisRequest(BaseModel):
     maps_url: str
@@ -30,61 +47,68 @@ class AnalysisRequest(BaseModel):
     limit: int = 50
 
 @app.post("/analyze")
-def analyze_reviews(req: AnalysisRequest, db: Session = Depends(database.get_db)):
+def analyze_reviews(req: AnalysisRequest):
     """
-    Main endpoint:
-    1. Check Postgres Cache
-    2. If miss or forceUpdate -> Scrape -> NLP -> Save to DB
-    3. Return Data
+    Main endpoint using Lazy Imports.
     """
-    global nlp_engine
-    if nlp_engine is None: nlp_engine = ReviewAnalyzer()
-
-    # Calculate Hash
-    url_hash = hashlib.md5(req.maps_url.encode()).hexdigest()
-
-    # 1. Check Cache (PostgreSQL)
-    if not req.forceUpdate:
-        cached_entry = database.get_cached_analysis(db, url_hash)
-        if cached_entry:
-            print(f"✅ Serving from PostgreSQL Cache (Hash: {url_hash})")
-            return {**cached_entry.analysis_json, "cached": True}
-
-    # 2. Scrape
-    print(f"🚀 Scraping Fresh Data for: {req.maps_url}")
-    scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True)
-    raw_reviews = scraper.scrape(return_data=True)
-
-    if not raw_reviews:
-        raise HTTPException(status_code=404, detail="No reviews found or scraping failed.")
-
-    # 3. NLP Analysis
-    print("🧠 Running NLP Analysis...")
-    analysis_result = nlp_engine.analyze(raw_reviews)
+    # 1. LAZY IMPORTS
+    import database
+    from scraper import GoogleMapsScraper
     
-    # Extract Business Name safely
-    business_name = raw_reviews[0].get("business_name") if raw_reviews else "Unknown"
+    # Manual DB Session Management
+    # standard SQLAlchemy pattern: create session, try, finally close
+    db = database.SessionLocal()
+    
+    try:
+        # Calculate Hash
+        url_hash = hashlib.md5(req.maps_url.encode()).hexdigest()
 
-    final_response = {
-        "business_name": business_name,
-        "total_reviews": analysis_result["total_reviews"],
-        "sentiment_summary": analysis_result["sentiment_summary"],
-        "average_rating": analysis_result["average_rating"],
-        "reviews": analysis_result["reviews"],
-        "cached": False
-    }
+        # 2. Check Cache
+        if not req.forceUpdate:
+            cached_entry = database.get_cached_analysis(db, url_hash)
+            if cached_entry:
+                print(f"✅ Serving from PostgreSQL Cache (Hash: {url_hash})")
+                return {**cached_entry.analysis_json, "cached": True}
 
-    # 4. Save to Cache (PostgreSQL)
-    database.save_analysis(
-        db, 
-        url_hash=url_hash, 
-        maps_url=req.maps_url, 
-        business_name=business_name, 
-        analysis_data=final_response
-    )
+        # 3. Scrape
+        print(f"🚀 Scraping Fresh Data for: {req.maps_url}")
+        scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True)
+        raw_reviews = scraper.scrape(return_data=True)
 
-    return final_response
+        if not raw_reviews:
+            raise HTTPException(status_code=404, detail="No reviews found or scraping failed.")
 
-@app.get("/")
-def health_check():
-    return {"status": "ok", "service": "Google Maps NLP API"}
+        # 4. NLP Analysis
+        print("🧠 Running NLP Analysis...")
+        nlp = get_nlp_engine()
+        analysis_result = nlp.analyze(raw_reviews)
+        
+        business_name = raw_reviews[0].get("business_name") if raw_reviews else "Unknown"
+
+        final_response = {
+            "business_name": business_name,
+            "total_reviews": analysis_result["total_reviews"],
+            "sentiment_summary": analysis_result["sentiment_summary"],
+            "average_rating": analysis_result["average_rating"],
+            "reviews": analysis_result["reviews"],
+            "cached": False
+        }
+
+        # 5. Save to Cache
+        database.save_analysis(
+            db, 
+            url_hash=url_hash, 
+            maps_url=req.maps_url, 
+            business_name=business_name, 
+            analysis_data=final_response
+        )
+
+        return final_response
+
+    except Exception as e:
+        print(f"❌ Error in /analyze: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+# Re-implementing manual session logic inside the endpoint to be robust
