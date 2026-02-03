@@ -1,0 +1,10 @@
+playwright
+pandas
+fastapi
+uvicorn
+transformers
+torch
+scipy
+pysentimiento
+sqlalchemy
+psycopg2-binary
