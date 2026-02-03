@@ -46,8 +46,8 @@ class AnalysisRequest(BaseModel):
     forceUpdate: bool = False
     limit: int = 50
 
-@app.post("/analyze")
-def analyze_reviews(req: AnalysisRequest):
+# @app.post("/analyze")
+# def analyze_reviews(req: AnalysisRequest):
     """
     Main endpoint using Lazy Imports.
     """
@@ -110,5 +110,83 @@ def analyze_reviews(req: AnalysisRequest):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+@app.post("/analyze")
+def analyze_reviews(req: AnalysisRequest):
+    """
+    Main endpoint using Lazy Imports with Database Fallback and Error Logging.
+    """
+    # 1. LAZY IMPORTS
+    import database
+    from scraper import GoogleMapsScraper
+    
+    db = database.SessionLocal()
+    
+    try:
+        # Calculate Hash
+        url_hash = hashlib.md5(req.maps_url.encode()).hexdigest()
+
+        # 2. Check Cache (Si no se fuerza actualización)
+        if not req.forceUpdate:
+            cached_entry = database.get_cached_analysis(db, url_hash)
+            if cached_entry:
+                print(f"✅ Serving from PostgreSQL Cache (Hash: {url_hash})")
+                return {**cached_entry.analysis_json, "cached": True}
+
+        # 3. Scrape Fresh Data
+        print(f"🚀 Scraping Fresh Data for: {req.maps_url}") [cite: 1]
+        scraper = GoogleMapsScraper(url=req.maps_url, max_reviews=req.limit, headless=True) [cite: 1]
+        raw_reviews = scraper.scrape(return_data=True) [cite: 1]
+
+        # 4. FALLBACK LOGIC: Registro de error y búsqueda en DB
+        if not raw_reviews:
+            # Mostramos el error en el log del servidor como solicitaste
+            print(f"❌ ERROR: No se pudieron obtener reseñas nuevas de {req.maps_url}. Iniciando recuperación de base de datos...") [cite: 1]
+            
+            fallback_entry = database.get_cached_analysis(db, url_hash)
+            
+            if fallback_entry:
+                print(f"📦 Fallback exitoso: Se recuperaron datos previos de '{fallback_entry.business_name}' para evitar respuesta vacía.")
+                return {**fallback_entry.analysis_json, "cached": True, "fallback": True}
+            else:
+                # Si no hay datos ni en la web ni en la base de datos
+                print(f"❌ CRITICAL: No existe registro previo en DB para {url_hash}. La solicitud fallará.")
+                raise HTTPException(status_code=404, detail="No reviews found and no cached data available.")
+
+        # 5. NLP Analysis (Si el scraping fue exitoso)
+        print("🧠 Running NLP Analysis...")
+        nlp = get_nlp_engine()
+        analysis_result = nlp.analyze(raw_reviews)
+        
+        business_name = raw_reviews[0].get("business_name") if raw_reviews else "Unknown" [cite: 1]
+
+        final_response = {
+            "business_name": business_name, [cite: 1]
+            "total_reviews": analysis_result["total_reviews"],
+            "sentiment_summary": analysis_result["sentiment_summary"],
+            "average_rating": analysis_result["average_rating"],
+            "reviews": analysis_result["reviews"],
+            "cached": False
+        }
+
+        # 6. Save to Cache
+        database.save_analysis(
+            db, 
+            url_hash=url_hash, 
+            maps_url=req.maps_url, 
+            business_name=business_name, 
+            analysis_data=final_response
+        )
+
+        return final_response
+
+    except Exception as e:
+        print(f"❌ Error fatal en /analyze: {str(e)}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 
 # Re-implementing manual session logic inside the endpoint to be robust
