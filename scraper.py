@@ -276,6 +276,16 @@ class GoogleMapsScraper:
                 #wait for full address
                 page.wait_for_url("**/maps/place/**", timeout=45000)
                 page.wait_for_selector('div[role="main"]', timeout=30000)
+                # Esperar CUALQUIERA de los elementos clave del perfil
+                try:
+                    page.wait_for_selector(
+                        "h1, button[aria-label*='Reviews'], button[aria-label*='Reseñas']",
+                        timeout=30000
+                    )
+                except TimeoutError:
+                    self.log("⚠️ No se detectó el panel del negocio (vista no cargada).")
+                    raise Exception("Business panel not loaded")
+
                 #self.random_sleep(3, 5)
 
                 # Extract Business Name
