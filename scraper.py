@@ -237,7 +237,6 @@ class GoogleMapsScraper:
             # Launch Browser
             browser = p.chromium.launch(
                 headless=self.headless,
-                channel="chromium",
                 args=browser_args
             )
             
