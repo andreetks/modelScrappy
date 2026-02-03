@@ -222,18 +222,22 @@ class GoogleMapsScraper:
             
         # RESTORING STEALTH ARGUMENTS (CRITICAL FOR LOGIN)
         browser_args = [
-            "--disable-blink-features=AutomationControlled",
+            #"--disable-blink-features=AutomationControlled",
+            #"--no-sandbox",
+            #"--disable-setuid-sandbox",
+            #"--disable-infobars",
+            #"--start-maximized",
+            "--disable-gpu",
             "--no-sandbox",
+            "--disable-dev-shm-usage",
             "--disable-setuid-sandbox",
-            "--disable-infobars",
-            "--window-size=1920,1080",
-            "--start-maximized"
         ]
 
         with sync_playwright() as p:
             # Launch Browser
             browser = p.chromium.launch(
                 headless=self.headless,
+                channel="chromium",
                 args=browser_args
             )
             
